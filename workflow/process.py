@@ -2,33 +2,57 @@
 
 import alfred
 import calendar
+import re
 from delorean import utcnow, parse, epoch
+from dateutil.tz import tzlocal
+from dateutil.tz import tzoffset
 
 def process(query_str):
     """ Entry point """
-    value = parse_query_value(query_str)
+    value, timezone = parse_query_value(query_str)
     if value is not None:
-        results = alfred_items_for_value(value)
+        results = alfred_items_for_value(value, timezone)
         xml = alfred.xml(results) # compiles the XML answer
         alfred.write(xml) # writes the XML back to Alfred
 
 def parse_query_value(query_str):
     """ Return value for the query string """
+    REGEX_TIMESTAMP = re.compile(r'^(?P<time>\d+)\s*(?P<timezone>(?P<sign>[\+\-])((?P<h>\d\d)(?P<m>\d\d)|(?P<hour>\d{1,2})))?$')
     try:
         query_str = str(query_str).strip('"\' ')
+        m = REGEX_TIMESTAMP.match(query_str)
         if query_str == 'now':
-            d = utcnow()
+            return utcnow(), tzlocal()
+        elif not m:
+            # Parse datetime string
+            d = parse(str(query_str))
+            return d, d.timezone()
+
+        time = m.group('time')
+        timezone = m.group('timezone')
+
+        d = epoch(float(time))
+
+        # Parse timezone of query string
+        if timezone:
+            sign = m.group('sign')
+            hours = m.group('h')
+            minutes = m.group('m')
+            only_hour = m.group('hour')
+            h = float(hours) if hours else float(only_hour)
+            m = float(minutes) if minutes else 0
+            offset = h * 3600 + m * 60
+            if sign == '-':
+                offset = -offset
+            z = tzoffset('UTC%s' % timezone, offset)
         else:
-            # Parse datetime string or timestamp
-            try:
-                d = epoch(float(query_str))
-            except ValueError:
-                d = parse(str(query_str))
+            z = tzlocal()
     except (TypeError, ValueError):
         d = None
-    return d
+        z = None
+    return d, z
 
-def alfred_items_for_value(value):
+def alfred_items_for_value(value, timezone):
     """
     Given a delorean datetime object, return a list of
     alfred items for each of the results
@@ -64,7 +88,8 @@ def alfred_items_for_value(value):
         ("%Y-%m-%dT%H:%M:%S%z", ''),
     ]
     for format, description in formats:
-        item_value = value.datetime.strftime(format)
+        # Shift to specific timezone for display -Tankery
+        item_value = value.datetime.astimezone(timezone).strftime(format)
         results.append(alfred.Item(
             title=str(item_value),
             subtitle=description,
